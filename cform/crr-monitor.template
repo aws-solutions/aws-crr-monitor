@@ -1,0 +1,885 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "(SO0022) - CRR Monitor: Cross-Region Replication monitor for S3. This template should be deployed in a single region per account, and requires Lambda, SNS, SQS and DynamoDB.",
+  "Parameters": {
+    "ArchiveToS3": {
+      "Description": "Do you want to archive the DynamoDB data to S3?. Deploy in KinesisFirehose supported region",
+      "Type": "String",
+      "Default": "No",
+      "AllowedValues": [
+        "Yes",
+        "No"
+      ]
+    },
+    "S3ArchiveBucket": {
+      "Description": "The name of the S3 bucket that contains the archive data from Dynamo DB",
+      "Type": "String"
+    },
+    "SendAnonymousData": {
+      "Description": "Send anonymous data to AWS",
+      "Type": "String",
+      "Default": "Yes",
+      "AllowedValues": [
+        "Yes",
+        "No"
+      ]
+    }
+  },
+  "Conditions": {
+    "StreamToKinesis": {
+      "Fn::Equals": [
+        {
+          "Ref": "ArchiveToS3"
+        },
+        "Yes"
+      ]
+    },
+    "AnonymousDatatoAWS": {
+      "Fn::Equals": [
+        {
+          "Ref": "SendAnonymousData"
+        },
+        "Yes"
+      ]
+    }
+  },
+  "Resources": {
+    "CRRMonitorRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [
+          {
+            "PolicyName": "CRRMonitorPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "CFNUsers",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cloudformation:Describe*"
+                  ],
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:cloudformation:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":*"
+                      ]
+                    ]
+                  }
+                },
+                {
+                  "Sid": "DynamoDBPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:*"
+                  ],
+                  "Resource": [ {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:dynamodb:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/CRRMonitor*"
+                      ]
+                    ]
+                  } , {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:lambda:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":function:CRR*"
+                      ]
+                    ]
+                  } ]
+                },
+                {
+                  "Sid": "CloudTrailLogPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogStreams"
+                  ],
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:logs:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":*"
+                  ]
+                    ]
+                  }
+                },
+                {
+                  "Sid": "LambdaPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "lambda:InvokeFunction",
+                    "lambda:AddPermission",
+                    "lambda:RemovePermission"
+                  ],
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:lambda:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":function:CRRMonitor"
+                  ]
+                    ]
+                  }
+                },
+                {
+                  "Sid": "CloudWatchMetricsPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cloudwatch:PutMetricData",
+                    "cloudwatch:PutMetricAlarm",
+                    "cloudwatch:ListMetrics",
+                    "cloudwatch:DeleteAlarms",
+                    "cloudwatch:EnableAlarmActions"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "CloudTrailPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "cloudtrail:*"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "DeploySNS",
+                  "Effect": "Allow",
+                  "Action": [
+                    "sns:CreateTopic",
+                    "sns:DeleteTopic",
+                    "sns:Subscribe",
+                    "sns:Unsubscribe",
+                    "sns:SetTopicAttributes"
+                  ],
+                  "Resource": [
+                    "arn:aws:sns:*:*:CRRMonitor*"
+                  ]
+                },
+                {
+                  "Sid": "DeployAgentPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "events:PutRule",
+                    "events:DeleteRule",
+                    "events:EnableRule",
+                    "events:PutTargets",
+                    "events:RemoveTargets"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "SQSQueuePerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "sqs:ReceiveMessage",
+                    "sqs:DeleteMessage",
+                    "sqs:ChangeMessageVisibility",
+                    "sqs:DeleteMessageBatch",
+                    "sqs:GetQueueUrl",
+                    "sqs:GetQueueAttributes"
+                  ],
+                  "Resource": [
+                    "arn:aws:sqs:*:*:CRRMonitor*"
+                  ]
+                },
+                {
+                  "Sid": "S3Perms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:AbortMultipartUpload",
+                    "s3:Get*",
+                    "s3:List*",
+                    "s3:Put*",
+                    "s3:CreateBucket",
+                    "s3:Delete*"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "FirehosePerm",
+                  "Effect": "Allow",
+                  "Action": [
+                    "firehose:*"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "CRRFirehoseRole": {
+      "Type": "AWS::IAM::Role",
+      "Condition": "StreamToKinesis",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [ "firehose.amazonaws.com" , "lambda.amazonaws.com" ]
+              },
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "sts:ExternalId": { "Ref" : "AWS::AccountId" }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "CRRFirehosePolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "S3Perms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:AbortMultipartUpload",
+                    "s3:GetBucketLocation",
+                    "s3:GetObject",
+                    "s3:ListBucket",
+                    "s3:ListBucketMultipartUploads",
+                    "s3:PutObject"
+                  ],
+                  "Resource": [
+                    { "Fn::Join" : [ "", [ "arn:aws:s3:::", { "Ref" : "S3ArchiveBucket" } ] ] },
+                    { "Fn::Join" : [ "", [ "arn:aws:s3:::", { "Ref" : "S3ArchiveBucket" }, "/*"] ] }
+                  ]
+                },
+                {
+                  "Sid": "LambdaPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "lambda:InvokeFunction",
+                    "lambda:GetFunctionConfiguration"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "CloudMetricsNotificationTopic" : {
+      "Type" : "AWS::SNS::Topic",
+      "Properties" : {
+        "DisplayName" : "CRRMonitorMetricsTopic",
+        "TopicName" : "CRRMonitorMetricsTopic"
+      }
+    },
+    "logBucket": {
+      "Type": "AWS::S3::Bucket",
+      "DeletionPolicy": "Retain"
+    },
+    "logBucketPolicy" : {
+      "Type" : "AWS::S3::BucketPolicy",
+      "Properties" : {
+        "Bucket" : {"Ref" : "logBucket"},
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AWSCloudTrailAclCheck20150319",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudtrail.amazonaws.com"
+              },
+              "Action": "s3:GetBucketAcl",
+              "Resource": { "Fn::Join": [ "", [ "arn:aws:s3:::", {"Ref" : "logBucket" } ] ] }
+            },
+                    {
+              "Sid": "AWSCloudTrailWrite20150319",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudtrail.amazonaws.com"
+                    },
+              "Action": "s3:PutObject",
+              "Resource": { "Fn::Join": [ "", [ "arn:aws:s3:::", {"Ref" : "logBucket" }, "/AWSLogs/", { "Ref" : "AWS::AccountId"} , "/*"] ] },
+              "Condition": {
+                "StringEquals": {
+                  "s3:x-amz-acl": "bucket-owner-full-control"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "CRRMonitorTrailAlarm": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Join" : [ "", [ "solutions-", {
+                  "Ref": "AWS::Region"
+                }
+              ]
+            ]
+          },
+          "S3Key": { "Fn::Join": [ "", [ "crr-monitor/v1/", "CRRMonitorTrailAlarm.py.zip" ] ] }
+        },
+        "Handler": "CRRMonitorTrailAlarm.handler",
+        "FunctionName": "CRRMonitorTrailAlarm",
+        "Role": { "Fn::GetAtt": [ "CRRMonitorRole", "Arn" ] },
+        "Runtime": "python2.7",
+        "Timeout": "300"
+      },
+      "DependsOn": [
+        "CRRMonitorRole",
+        "CloudMetricsNotificationTopic"
+      ]
+    },
+    "CustomTrailAlarm": {
+      "Type": "Custom::TrailAlarm",
+      "Properties": {
+        "ServiceToken": { "Fn::GetAtt": [ "CRRMonitorTrailAlarm", "Arn" ] },
+        "trail_name" : "CRRMonitor_trail",
+        "trail_log_bucket" : { "Ref" : "logBucket"},
+        "sns_topic_arn" : { "Ref" : "CloudMetricsNotificationTopic"}
+      },
+      "DependsOn": [
+        "CRRMonitorTrailAlarm"
+      ]
+    },
+    "CRRMonitorLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket" : {
+            "Fn::Join" : [ "", [ "solutions-", {
+              "Ref" : "AWS::Region"
+            } ] ]
+          },
+          "S3Key": { "Fn::Join": [ "", [ "crr-monitor/v1/", "CRRMonitor.py.zip" ] ] }
+        },
+        "Handler": "CRRMonitor.queue_handler",
+        "FunctionName": "CRRMonitor",
+        "Environment" : {
+          "Variables": {
+            "maxtask" : "1800" , "maxspawn" : "20"
+          }
+        },
+        "Role": { "Fn::GetAtt": [ "CRRMonitorRole", "Arn" ] },
+        "Runtime": "python2.7",
+        "Timeout": "300"
+      },
+      "DependsOn": [
+        "CRRMonitorRole"
+      ]
+    },
+    "MonitorTimer": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Runs CRRMonitor every 1 minute.",
+        "ScheduleExpression": "rate(1 minute)",
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Id": "CRRMonitor",
+            "Arn": { "Fn::GetAtt": [ "CRRMonitorLambda", "Arn" ] }
+          }
+        ]
+      },
+      "DependsOn": [
+        "CRRMonitorLambda"
+      ]
+    },
+    "MonitorTimerPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:invokeFunction",
+        "FunctionName": {
+          "Ref": "CRRMonitorLambda"
+        },
+        "Principal": "events.amazonaws.com",
+        "SourceArn": { "Fn::GetAtt": [ "MonitorTimer", "Arn" ] }
+      },
+      "DependsOn": [
+        "MonitorTimer"
+      ]
+    },
+    "HousekeepingLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket" : {
+            "Fn::Join" : [ "", [ "solutions-", {
+              "Ref" : "AWS::Region"
+            } ] ]
+          },
+          "S3Key": {   "Fn::Join": [ "", [ "crr-monitor/v1/", "CRRMonitorHousekeeping.py.zip" ] ] }
+        },
+        "Handler": "CRRMonitorHousekeeping.lambda_handler",
+        "Environment" : {
+          "Variables": {
+            "stream_to_kinesis": { "Ref" : "ArchiveToS3" },
+            "kinesisfirestream": {
+              "Fn::If" : [
+                "StreamToKinesis",
+                {"Ref" : "CRRMonitorKinesisDeliveryStream"},
+                {"Ref" : "AWS::NoValue"}
+              ]
+            },
+            "stack_name" : { "Ref" : "AWS::StackName"},
+            "purge_thresh": "24",
+            "send_anonymous_data" : { "Ref" : "SendAnonymousData" }
+          }
+        },
+        "FunctionName": "CRRMonitorHousekeeping",
+        "Role": { "Fn::GetAtt": [ "CRRMonitorRole", "Arn" ] },
+        "Runtime": "python2.7",
+        "Timeout": "300"
+      },
+      "DependsOn": [
+        "CRRMonitorRole"
+      ]
+    },
+    "HousekeepingTimer": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Runs the housekeeper every 5 minutes.",
+        "ScheduleExpression": "rate(5 minutes)",
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Id": "Housekeeper",
+            "Arn": { "Fn::GetAtt": [ "HousekeepingLambda", "Arn" ] }
+          }
+        ]
+      },
+      "DependsOn": [
+        "HousekeepingLambda"
+      ]
+    },
+    "HousekeepingPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:invokeFunction",
+        "FunctionName": {
+          "Ref": "HousekeepingLambda"
+        },
+        "Principal": "events.amazonaws.com",
+        "SourceArn": { "Fn::GetAtt": [ "HousekeepingTimer", "Arn" ] }
+      },
+      "DependsOn": [
+        "HousekeepingTimer"
+      ]
+    },
+    "MaintLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket" : {
+            "Fn::Join" : [ "", [ "solutions-", {
+              "Ref" : "AWS::Region"
+            } ] ]
+          },
+          "S3Key": {   "Fn::Join": [ "", [ "crr-monitor/v1/", "CRRHourlyMaint.py.zip" ] ] }
+        },
+        "Handler": "CRRHourlyMaint.lambda_handler",
+        "FunctionName": "CRRHourlyMaint",
+        "Role": { "Fn::GetAtt": [ "CRRMonitorRole", "Arn" ] },
+        "Runtime": "python2.7",
+        "Timeout": "300"
+      },
+      "DependsOn": [
+        "CRRMonitorRole"
+      ]
+    },
+    "MaintTimer": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Runs the maintenance tasks every hour.",
+        "ScheduleExpression": "rate(1 hour)",
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Id": "CRRMaint",
+            "Arn": { "Fn::GetAtt": [ "MaintLambda", "Arn" ] }
+          }
+        ]
+      },
+      "DependsOn": [
+        "MaintLambda"
+      ]
+    },
+    "MaintPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:invokeFunction",
+        "FunctionName": {
+          "Ref": "MaintLambda"
+        },
+        "Principal": "events.amazonaws.com",
+        "SourceArn": { "Fn::GetAtt": [ "MaintTimer", "Arn" ] }
+      },
+      "DependsOn": [
+        "MaintTimer"
+      ]
+    },
+    "CRRMonitorQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": { "Fn::Join": [ "", [ "CRRMonitor", "Queue" ] ] }
+      }
+    },
+    "CRRMonitorQueuePolicy": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Id": "CRRMonitorQueuePolicy",
+          "Statement": [
+            {
+              "Sid": "SQSQueuePermission",
+              "Effect": "Allow",
+              "Principal": "*",
+              "Action": [
+                "SQS:SendMessage",
+                "SQS:ReceiveMessage",
+                "SQS:DeleteMessage"
+              ],
+              "Resource": [
+                { "Fn::GetAtt": [ "CRRMonitorQueue", "Arn" ] }
+              ],
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": { "Fn::Join" : [ ":", [ "arn:aws:sns", "*", { "Ref": "AWS::AccountId" } , "*" ] ] }
+                }
+              }
+            }
+          ]
+        },
+        "Queues": [
+          { "Ref": "CRRMonitorQueue" }
+        ]
+      }
+    },
+    "CRRMonitorKinesisDeliveryStream": {
+      "Type" : "AWS::KinesisFirehose::DeliveryStream",
+      "Condition": "StreamToKinesis",
+      "Properties" : {
+        "DeliveryStreamName" : "CRRMonitorDeliveryStream",
+        "S3DestinationConfiguration" : {
+          "BucketARN" : { "Fn::Join" : [ ":", [ "arn:aws:s3::", { "Ref" : "S3ArchiveBucket" } ] ] },
+          "BufferingHints" : {
+            "IntervalInSeconds" : "60",
+            "SizeInMBs" : "5"
+          },
+          "CompressionFormat" : "GZIP",
+          "Prefix" : "CRRMonitorArchive",
+          "RoleARN" : { "Fn::GetAtt": [ "CRRFirehoseRole", "Arn" ] },
+          "CloudWatchLoggingOptions" : {
+            "Enabled" : true,
+            "LogGroupName" : "deliverystream",
+            "LogStreamName" : "s3Backup"
+          }
+        }
+
+      }
+    },
+    "CRRDeployAgentLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket" : {
+            "Fn::Join" : [ "", [ "solutions-", {
+              "Ref" : "AWS::Region"
+            } ] ]
+          },
+          "S3Key": { "Fn::Join": [ "", [ "crr-monitor/v1/", "CRRdeployagent.zip" ] ] }
+        },
+        "Handler": "CRRdeployagent.handler",
+        "FunctionName": "CRRDeployAgent",
+        "Role": { "Fn::GetAtt": [ "CRRMonitorRole", "Arn" ] },
+        "Runtime": "python2.7",
+        "Timeout": "300"
+      },
+      "DependsOn": [
+        "CRRMonitorRole"
+      ]
+    },
+    "CustomDeploy": {
+      "Type": "Custom::DeployAgent",
+      "Properties": {
+        "ServiceToken": { "Fn::GetAtt": [ "CRRDeployAgentLambda", "Arn" ] },
+        "Topic": "CRRMonitor",
+        "CRRMonitor": { "Fn::GetAtt": [ "CRRMonitorLambda", "Arn" ] },
+        "CRRQueueArn": { "Fn::GetAtt": [ "CRRMonitorQueue", "Arn" ] },
+        "MonitorRegion": { "Ref": "AWS::Region" },
+        "CRRMonitorTable": { "Ref": "CRRMonitorDDB" }
+      },
+      "DependsOn": [
+        "CRRDeployAgentLambda",
+        "CRRMonitorLambda",
+        "CRRMonitorQueue"
+      ]
+    },
+    "CRRMonitorDDB": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "ETag",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "ETag",
+            "KeyType": "HASH"
+          }
+        ],
+        "ProvisionedThroughput": {
+          "ReadCapacityUnits": "120",
+          "WriteCapacityUnits": "120"
+        },
+        "TableName": "CRRMonitor"
+      }
+    },
+    "CRRMonitorStatisticsDDB": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "OriginReplicaBucket",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "OriginReplicaBucket",
+            "KeyType": "HASH"
+          }
+        ],
+        "ProvisionedThroughput": {
+          "ReadCapacityUnits": "5",
+          "WriteCapacityUnits": "5"
+        },
+        "TableName": "CRRMonitorStatistics"
+      }
+    },
+    "SolutionHelperRole": {
+      "Type": "AWS::IAM::Role",
+      "Condition": "AnonymousDatatoAWS",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [
+          {
+            "PolicyName": "Custom_Solution_Helper_Permissions",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:logs:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":log-group:/aws/lambda/*"
+                      ]
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "SolutionHelper": {
+      "Type": "AWS::Lambda::Function",
+      "Condition": "AnonymousDatatoAWS",
+      "Properties": {
+        "Handler": "solution-helper.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "SolutionHelperRole",
+            "Arn"
+          ]
+        },
+        "Description": "This function creates a CloudFormation custom lambda resource that creates custom lambda functions by finding and replacing specific values from existing lambda function code.",
+        "Code": {
+          "S3Bucket": {
+            "Fn::Join": [
+              "",
+              [
+                "solutions-",
+                {
+                  "Ref": "AWS::Region"
+                }
+              ]
+            ]
+          },
+          "S3Key": "library/solution-helper/v3/solution-helper.zip"
+        },
+        "Runtime": "python2.7",
+        "Timeout": "300"
+      }
+    },
+    "CreateUniqueID": {
+      "Type": "Custom::CreateUUID",
+      "Condition": "AnonymousDatatoAWS",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "SolutionHelper",
+            "Arn"
+          ]
+        },
+        "CreateUniqueID": "true"
+      },
+      "DependsOn": "SolutionHelper"
+    }
+  },
+  "Outputs": {
+    "QueueURL": {
+      "Description": "URL of newly created SQS Queue",
+      "Value": { "Ref": "CRRMonitorQueue" }
+    },
+    "QueueARN": {
+      "Description": "ARN of newly created SQS Queue",
+      "Value": { "Fn::GetAtt": [ "CRRMonitorQueue", "Arn" ] }
+    },
+    "QueueName": {
+      "Description": "Name newly created SQS Queue",
+      "Value": { "Fn::GetAtt": [ "CRRMonitorQueue", "QueueName" ] }
+    },
+    "MetricsNotificationTopic": {
+      "Description": "Cloud Metrics Notification Topic",
+      "Value": { "Fn::GetAtt": [ "CloudMetricsNotificationTopic", "TopicName" ] }
+    },
+    "UUID": {
+      "Description": "Newly created random UUID.",
+      "Condition": "AnonymousDatatoAWS",
+      "Value": {
+        "Fn::GetAtt": [
+          "CreateUniqueID",
+          "UUID"
+        ]
+      }
+    },
+    "AnonymousData": {
+      "Description": "Send Anonymous Data",
+      "Value": {
+        "Ref": "SendAnonymousData"
+      }
+    }
+  },
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": {
+            "default": "DynamoDB"
+          },
+          "Parameters": [ "ArchiveToS3", "S3ArchiveBucket" ]
+        },
+        {
+          "Label": {
+            "default": "AnonymousData"
+          },
+          "Parameters": ["SendAnonymousData"]
+        }
+      ],
+      "ParameterLabels" : {
+        "ArchiveToS3" : { "default" : "Archive to S3"},
+        "S3ArchiveBucket" : { "default" : "Archive Bucket" },
+        "SendAnonymousData" : { "default" : "Send Anonymous Data" }
+      }
+    }
+  }
+}

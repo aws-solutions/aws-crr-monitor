@@ -1,0 +1,372 @@
+from __future__ import print_function
+
+import json
+import boto3
+import os
+import logging
+from datetime import datetime,timedelta
+from urllib2 import Request
+from urllib2 import urlopen
+
+log = logging.getLogger()
+log.setLevel(logging.INFO)
+
+log.debug('Loading function')
+
+def getparm (parmname, defaultval):
+    try:
+        myval = os.environ[parmname]
+        if isinstance(defaultval, int):
+            return int(myval)
+        else:
+            return myval
+    except:
+        print('Environmental variable \'' + parmname + '\' not found. Using default [' + str(defaultval) + ']')
+        return defaultval
+#
+# Define the DynamoDB table to be used to track replication status.
+#   It must be in the same region as this Lambda and should already
+#   exist. It is created by the CloudFormation template.
+#
+ddbtable = getparm('appname','CRRMonitor')
+stattable = ddbtable + 'Statistics'
+# Stream to kinesis? Must be YES or NO
+stream_to_kinesis = getparm('stream_to_kinesis','No')
+kinesisfirestream = getparm('kinesisfirestream', ddbtable + 'DeliveryStream')
+stack_name = getparm('stack_name','Nil')
+
+timefmt = '%Y-%m-%dT%H:%M:%SZ'
+roundTo = getparm('roundto', 300) # 5 minute buckets for CW metrics
+purge_thresh = getparm('purge_thresh', 24) # threshold in hours
+client={
+    'cw': { 'service': 'cloudwatch' },
+    'ddb': { 'service': 'dynamodb'}
+}
+# optionally include firehose
+if stream_to_kinesis != 'No':
+    #kinesisfirestream = ddbtable + 'DeliveryStream'
+    client['firehose'] = { 'service': 'firehose' }
+
+# =====================================================================
+# connect_clients
+# ---------------
+# Connect to all the clients. We will do this once per instantiation of
+# the Lambda function (not per execution)
+# =====================================================================
+def connect_clients(clients_to_connect):
+    for c in clients_to_connect:
+        try:
+            if 'region' in clients_to_connect[c]:
+                clients_to_connect[c]['handle']=boto3.client(clients_to_connect[c]['service'], region_name=clients_to_connect[c]['region'])
+            else:
+                clients_to_connect[c]['handle']=boto3.client(clients_to_connect[c]['service'])
+        except Exception as e:
+            print(e)
+            print('Error connecting to ' + clients_to_connect[c]['service'])
+            raise e
+    return clients_to_connect
+
+def lambda_handler(event, context):
+    # -----------------------------------------------------------------
+    # save items in S3 - save items
+    #
+    def save_item(item):
+        print('Save Item' + json.dumps(item))
+        try:
+            response = client['firehose']['handle'].put_record(
+                DeliveryStreamName=kinesisfirestream,
+                Record={
+                    'Data': json.dumps(item) + '\n'
+                }
+            )
+        except Exception as e:
+            print(e)
+            print('Error saving ' + item['ETag']['S'] + ' from ' + ddbtable)
+            raise e
+
+            # -----------------------------------------------------------------
+
+    # -----------------------------------------------------------------
+    # post_stats - post statistics to CloudWatch
+    #
+    def post_stats(item):
+        print('Posting statistics to CloudWatch for ' + item['source_bucket']['S'] + ' time bucket ' + item['timebucket']['S'])
+
+        ts=item['timebucket']['S']
+
+        # -------------------------------------------------------------
+        # Special Handling: Failed replicatons are reported in the
+        # same data format. The destination bucket will be FAILED.
+        # Pull these out separately to a different CW metric.
+        if item['dest_bucket']['S'] == 'FAILED':
+            try:
+                client['cw']['handle'].put_metric_data(
+                    Namespace='CRRMonitor',
+                    MetricData=[
+                        {
+                            'MetricName': 'FailedReplications',
+                            'Dimensions': [
+                                {
+                                    'Name': 'SourceBucket',
+                                    'Value': item['source_bucket']['S']
+                                }
+                            ],
+                            'Timestamp': ts,
+                            'Value': int(item['objects']['N'])
+                        },
+                    ]
+                )
+            except Exception as e:
+                print(e)
+                print('Error creating CloudWatch metric FailedReplications')
+                raise e
+
+        else:
+            try:
+                client['cw']['handle'].put_metric_data(
+                    Namespace='CRRMonitor',
+                    MetricData=[
+                        {
+                            'MetricName': 'ReplicationObjects',
+                            'Dimensions': [
+                                {
+                                    'Name': 'SourceBucket',
+                                    'Value': item['source_bucket']['S']
+                                },
+                                {
+                                    'Name': 'DestBucket',
+                                    'Value': item['dest_bucket']['S']
+                                }
+                            ],
+                            'Timestamp': ts,
+                            'Value': int(item['objects']['N'])
+                        },
+                    ]
+                )
+            except Exception as e:
+                print(e)
+                print('Error creating CloudWatch metric')
+                raise e
+
+            try:
+                client['cw']['handle'].put_metric_data(
+                    Namespace='CRRMonitor',
+                    MetricData=[
+                        {
+                            'MetricName': 'ReplicationSpeed',
+                            'Dimensions': [
+                                {
+                                    'Name': 'SourceBucket',
+                                    'Value': item['source_bucket']['S']
+                                },
+                                {
+                                    'Name': 'DestBucket',
+                                    'Value': item['dest_bucket']['S']
+                                }
+                            ],
+                            'Timestamp': ts,
+                            'Value': ((int(item['size']['N'])*8)/1024)/(int(item['elapsed']['N'])+1)
+                        },
+                    ]
+                )
+            except Exception as e:
+                print(e)
+                print('Error creating CloudWatch metric')
+                raise e
+
+        print ('Statistics posted to ' + ts)
+
+        try:
+            client['ddb']['handle'].delete_item(
+                TableName=stattable,
+                Key={
+                    'OriginReplicaBucket': {
+                        'S': item['source_bucket']['S'] + ':' + item['dest_bucket']['S'] + ':' + ts
+                    }
+                }
+            )
+            print('Purged statistics date for ' + ts)
+        except Exception as e:
+            print(e)
+            print('Error purging from ' + ts)
+            raise e
+
+    #======================== post_stats ==============================
+
+    #==================================================================
+    # firehose: retrieve all records completed in the last 5 minutes
+    # Stream them to firehose
+    def firehose(ts):
+        begts=ts - timedelta(minutes=5)
+        arch_beg = begts.strftime(timefmt)
+        arch_end = ts.strftime(timefmt)
+        # Set scan filter attrs
+        eav = {
+                ":zero": { "N": "0" },
+                ":archbeg": { "S": arch_beg },
+                ":archend": { "S": arch_end }
+            }
+
+        print('Reading from ' + ddbtable)
+        try:
+            response = client['ddb']['handle'].scan(
+                TableName=ddbtable,
+                ExpressionAttributeValues=eav,
+                FilterExpression="end_datetime >= :archbeg and end_datetime < :archend",
+                Limit=1000
+                )
+        except Exception as e:
+            print(e)
+            print('Table ' + ddbtable + ' scan failed')
+            raise e
+
+        print('Archiving items from ' + ddbtable + ' beg>=' + arch_beg + ' end=' + arch_end)
+
+        for i in response['Items']:
+            save_item(i)
+
+        while 'LastEvaluatedKey' in response:
+            response = client['ddb']['handle'].scan(
+                TableName=ddbtable,
+                FilterExpression="end_datetime >= :archbeg and end_datetime < :archend",
+                ExpressionAttributeValues=eav,
+                ExclusiveStartKey=response['LastEvaluatedKey'],
+                Limit=1000
+                )
+
+            for i in response['Items']:
+                print('Items LastEvaluated ' + i['ETag']['S'])
+                save_item(i)
+    #====================== firehose ==================================
+
+    # What time is it?
+    ts = datetime.utcnow()
+
+    # CRRMonitor logs forward (rounds up). We want to read from the last bucket,
+    # not the current on. So round down to the previous 5 min interval
+    secs = (ts.replace(tzinfo=None) - ts.min).seconds
+    rounding = (secs-roundTo/2) // roundTo * roundTo
+    ts = ts + timedelta(0,rounding-secs,-ts.microsecond)
+
+    # save the timestamp we created in a str
+    statbucket = datetime.strftime(ts, timefmt) # We'll get stats from this bucket
+    print('Logging from ' + statbucket)
+
+    # -----------------------------------------------------------------
+    # Process Statistics
+    #
+    # Get the name of the 5 minute stat bucket that we just stopped
+    #  logging to, read the data, and delete the record.
+    #
+    try:
+        client['ddb']['handle'].describe_table(
+            TableName = stattable
+        )
+    except Exception as e:
+        print(e)
+        print('Table ' + stattable + ' does not exist - need to create it')
+        raise e
+
+    eav = {
+            ":stats": { "S": statbucket }
+        }
+
+    try:
+        response = client['ddb']['handle'].scan(
+            TableName=stattable,
+            ExpressionAttributeValues=eav,
+            FilterExpression="timebucket <= :stats",
+            ConsistentRead=True
+            )
+    except Exception as e:
+        print(e)
+        print('Table ' + ddbtable + ' scan failed')
+        raise e
+
+    if len(response['Items']) == 0:
+        print('WARNING: No stats bucket found for ' + statbucket)
+
+    ## Trigger sol_helper to collect stats data
+    sol_helper(response)
+
+    for i in response['Items']:
+        post_stats(i)
+
+    while 'LastEvaluatedKey' in response:
+        try:
+            response = client['ddb']['handle'].scan(
+                TableName=ddbtable,
+                FilterExpression="timebucket <= :stats",
+                ExpressionAttributeValues=eav,
+                ExclusiveStartKey=response['LastEvaluatedKey'],
+                ConsistentRead=True
+                )
+        except Exception as e:
+            print(e)
+            print('Table ' + ddbtable + ' scan failed')
+            raise e
+
+        for i in response['Items']:
+            post_stats(i)
+
+    # Archive to firehose
+    if stream_to_kinesis == 'Yes':
+        firehose()
+
+def sol_helper(response):
+    print('sol_helper')
+    print(response)
+    try:
+        cf = boto3.client('cloudformation')
+        bucket_dict = []
+        count = 1
+        for item in response['Items']:
+            if item['dest_bucket']['S'] != 'FAILED':
+                resp_dict = { "bucket" : count, "objects": item['objects']['N'], "size": item['size']['N'] }
+                bucket_dict.append(resp_dict)
+                count = count + 1
+
+        dataDict = bucket_dict
+        postDict = {}
+        outputs = {}
+        TimeNow = datetime.utcnow().isoformat()
+        TimeStamp = str(TimeNow)
+
+        # Read output variables from CloudFormation Template
+        # stack_name = context.invoked_function_arn.split(':')[6].rsplit('-', 2)[0]
+        print(stack_name)
+        response = cf.describe_stacks(StackName=stack_name)
+        for e in response['Stacks'][0]['Outputs']:
+            outputs[e['OutputKey']] = e['OutputValue']
+        uuid = outputs['UUID']
+        sendData = outputs['AnonymousData']
+        print(sendData)
+        print(uuid)
+
+        # Send anonymous data
+        if sendData == "Yes" and len(bucket_dict) > 0:
+            postDict['Data'] = dataDict
+            postDict['TimeStamp'] = TimeStamp
+            postDict['Solution'] = 'SO0022'
+            postDict['UUID'] = uuid
+            print('HouseKeeping')
+
+            # API Gateway URL to make HTTP POST call
+            url = 'https://metrics.awssolutionsbuilder.com/generic'
+            data = json.dumps(postDict)
+            headers = {'content-type': 'application/json'}
+            req = Request(url, data, headers)
+            rsp = urlopen(req)
+            content = rsp.read()
+            rspcode = rsp.getcode()
+            log.debug('Response Code: {}'.format(rspcode))
+            log.debug('Response Content: {}'.format(content))
+
+    except Exception as e:
+        print(e)
+        raise e
+
+
+
+######## M A I N ########
+client = connect_clients(client)
