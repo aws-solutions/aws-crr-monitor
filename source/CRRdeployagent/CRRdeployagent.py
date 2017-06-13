@@ -206,8 +206,8 @@ def agent_creator(agt_region, topic_name, queue_arn):
 #
 @handler.update
 def update_agent(event, context):
-    agt_region = event["ResourceProperties"]["AgentRegion"] # where to create the agent
-    topic_name = event["ResourceProperties"]["Topic"] # SNS topic
+    event["ResourceProperties"]["AgentRegion"] # where to create the agent
+    event["ResourceProperties"]["Topic"] # SNS topic
 
     # No update action necessary
     return {}

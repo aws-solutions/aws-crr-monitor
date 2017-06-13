@@ -161,17 +161,16 @@ def put_metric_alarm(sns_topic,src_buckets):
                 ],
                 MetricName='FailedReplications',
                 Namespace='CRRMonitor',
-                Statistic='Minimum',
+                Statistic='Sum',
                 Dimensions=[
                     {
                         'Name': 'SourceBucket',
                         'Value': bucket
                     },
                 ],
-                Unit='Count',
-                Period=300,
+                Period=60,
                 EvaluationPeriods=1,
-                Threshold=0,
+                Threshold=0.0,
                 ComparisonOperator='GreaterThanThreshold'
 
         )

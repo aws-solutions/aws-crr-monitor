@@ -34,6 +34,7 @@ stattable = ddbtable + 'Statistics'
 stream_to_kinesis = getparm('stream_to_kinesis','No')
 kinesisfirestream = getparm('kinesisfirestream', ddbtable + 'DeliveryStream')
 stack_name = getparm('stack_name','Nil')
+send_anonymous_data = getparm('send_anonymous_data','No')
 
 timefmt = '%Y-%m-%dT%H:%M:%SZ'
 roundTo = getparm('roundto', 300) # 5 minute buckets for CW metrics
@@ -202,7 +203,6 @@ def lambda_handler(event, context):
         arch_end = ts.strftime(timefmt)
         # Set scan filter attrs
         eav = {
-                ":zero": { "N": "0" },
                 ":archbeg": { "S": arch_beg },
                 ":archend": { "S": arch_end }
             }
@@ -287,7 +287,8 @@ def lambda_handler(event, context):
         print('WARNING: No stats bucket found for ' + statbucket)
 
     ## Trigger sol_helper to collect stats data
-    sol_helper(response)
+    if send_anonymous_data == 'Yes':
+       sol_helper(response)
 
     for i in response['Items']:
         post_stats(i)
@@ -311,7 +312,7 @@ def lambda_handler(event, context):
 
     # Archive to firehose
     if stream_to_kinesis == 'Yes':
-        firehose()
+        firehose(ts)
 
 def sol_helper(response):
     print('sol_helper')
