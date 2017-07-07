@@ -50,7 +50,11 @@ def get_agent_regions():
             response = client.get_bucket_location(
                 Bucket=bucket
             )
-            agent_set.add(response['LocationConstraint'])
+            region = response['LocationConstraint']
+            if region is None:
+                agent_set.add('us-east-1') ## Location constraint for all us-east bucket returns a null as in S3
+            else:
+                agent_set.add(region)
         for bucket in source_buckets:
             response = client.get_bucket_location(
                 Bucket=bucket
