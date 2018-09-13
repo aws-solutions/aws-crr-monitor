@@ -47,29 +47,29 @@ def get_agent_regions():
         replica_buckets = get_replica_buckets(client)
         agent_set = set([])
         for bucket in replica_buckets:
-            response = client.get_bucket_location(
-                Bucket=bucket
-            )
-            region = response['LocationConstraint']
-            if region is None:
-                agent_set.add('us-east-1') ## Location constraint for all us-east bucket returns a null as in S3
-            else:
-                agent_set.add(region)
+            region = get_bucket_location(client, bucket)
+            agent_set.add(region)
         for bucket in source_buckets:
-            response = client.get_bucket_location(
-                Bucket=bucket
-            )
-            region = response['LocationConstraint']
-            if region is None:
-                agent_set.add('us-east-1') ## Location constraint for all us-east bucket returns a null as in S3
-            else:
-                agent_set.add(region)
+            region = get_bucket_location(client, bucket)
+            agent_set.add(region)
         agent_regions = list(agent_set)
         print(agent_regions)
     except Exception as e:
         print(e)
         raise e
     return agent_regions
+
+def get_bucket_location(client, bucket):
+    try:
+        response = client.head_bucket(
+            Bucket=bucket
+        )
+        return response['ResponseMetadata']['HTTPHeaders']['x-amz-bucket-region']
+    except Exception as e:
+        print("failed to head_bucket on %s :" % (bucket))
+        print(e)
+        raise e
+
 
 # =====================================================================
 # CREATE
