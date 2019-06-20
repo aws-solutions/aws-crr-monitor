@@ -1,19 +1,40 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+##############################################################################
+#  Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.   #
+#                                                                            #
+#  Licensed under the Amazon Software License (the 'License'). You may not   #
+#  use this file except in compliance with the License. A copy of the        #
+#  License is located at                                                     #
+#                                                                            #
+#      http://aws.amazon.com/asl/                                            #
+#                                                                            #
+#  or in the 'license' file accompanying this file. This file is distributed #
+#  on an 'AS IS' BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,        #
+#  express or implied. See the License for the specific language governing   #
+#  permissions and limitations under the License.                            #
+##############################################################################
+
 from __future__ import print_function
 
 import json
 import boto3
+from botocore.exceptions import ClientError
 import os
 from datetime import datetime, timedelta
 
-def getparm (parmname, defaultval):
+def getparm(parmname, defaultval):
     try:
         myval = os.environ[parmname]
+        print('Environmental variable \'' + parmname + '\' = ' + str(myval))
         if isinstance(defaultval, int):
             return int(myval)
         else:
             return myval
     except:
-        print('Environmental variable \'' + parmname + '\' not found. Using default [' + str(defaultval) + ']')
+        print('Environmental variable \'' + parmname + '\' not found. Using default [' + \
+            str(defaultval) + ']')
         return defaultval
 
 # =====================================================================
@@ -29,7 +50,7 @@ appname = getparm('appname', 'CRRMonitor')
 # average of 500ms to process a single SQS record you would set this to
 # 300 / 0.5 = 600. This parameter tells the lambda when to ask for help:
 # If the queue depth is > maxtask it will spawn a copy of itself.
-maxtask = getparm('maxtask',1800)
+maxtask = getparm('maxtask', 1800)
 
 # maxspawn: This parameter limits how many copies of itself the lambda
 # can spawn. This should not allow you to exceed your maximum concurrent
@@ -39,10 +60,14 @@ maxtask = getparm('maxtask',1800)
 # allow capacity of 200 events per second at an average processing time
 # of 500ms per event, or 100 CRR replications per second. Scale and
 # request limits accordingly.
-maxspawn = getparm('maxspawn',20)
+maxspawn = getparm('maxspawn', 20)
 
 # How long to keep records for completed transfers
-purge_thresh = getparm('purge_thresh',24)
+purge_thresh = getparm('purge_thresh', 24)
+
+# DEBUG
+DEBUG = getparm('debug', 0)
+
 #
 # ddbtable and stattable: name of the DynamoDB tables. The tables are
 # created in the CloudFormation stack and defaults to the value of appname.
@@ -57,12 +82,12 @@ queue = appname + 'Queue'
 timefmt = '%Y-%m-%dT%H:%M:%SZ'
 # client: defines the api client connections to create
 client={
-    'ddb': { 'service': 'dynamodb' },
-    'sqs': { 'service': 'sqs' },
-    'lbd': { 'service': 'lambda' }
+    'ddb': {'service': 'dynamodb'},
+    'sqs': {'service': 'sqs'},
+    'lbd': {'service': 'lambda'}
 }
-s3client={} # will hold client handle for s3 per region
-initfail={} # hash of source buckets to handle FAILED counter initialization
+s3client = {} # will hold client handle for s3 per region
+initfail = {} # hash of source buckets to handle FAILED counter initialization
 
 # =====================================================================
 # connect_clients
@@ -74,9 +99,9 @@ def connect_clients(clients_to_connect):
     for c in clients_to_connect:
         try:
             if 'region' in clients_to_connect[c]:
-                clients_to_connect[c]['handle']=boto3.client(clients_to_connect[c]['service'], region_name=clients_to_connect[c]['region'])
+                clients_to_connect[c]['handle'] = boto3.client(clients_to_connect[c]['service'], region_name=clients_to_connect[c]['region'])
             else:
-                clients_to_connect[c]['handle']=boto3.client(clients_to_connect[c]['service'])
+                clients_to_connect[c]['handle'] = boto3.client(clients_to_connect[c]['service'])
         except Exception as e:
             print(e)
             print('Error connecting to ' + clients_to_connect[c]['service'])
@@ -84,16 +109,16 @@ def connect_clients(clients_to_connect):
     return clients_to_connect
 
 def message_handler(event):
-    def log_statistics(Src,Dst,Tstamp,Size,ET,roundTo):
+    def log_statistics(Src, Dst, Tstamp, Size, ET, roundTo):
         # -------------------------------------------------------------
         # Derive the statistic bucket from source/dest and time bucket
         # (5 minute rolling window)
         #
-        statbucket=Src + ':' + Dst
+        statbucket = Src + ':' + Dst
         ts = datetime.strptime(Tstamp, timefmt)
         secs = (ts.replace(tzinfo=None) - ts.min).seconds
         rounding = (secs+roundTo/2) // roundTo * roundTo
-        ts = ts + timedelta(0,rounding-secs,-ts.microsecond)
+        ts = ts + timedelta(0, rounding-secs, -ts.microsecond)
         timebucket = datetime.strftime(ts, timefmt)
         statbucket += ':' + timebucket
         # -------------------------------------------------------------
@@ -104,19 +129,20 @@ def message_handler(event):
         stat_update_exp = 'SET timebucket = :t, source_bucket = :o, dest_bucket = :r ADD objects :a, size :c, elapsed :d'
         # -------------------------------------------------------------
         # push the first attr: s3Object
-        stat_exp_attrs[':a'] = { 'N': '1' }
-        stat_exp_attrs[':c'] = { 'N': Size }
-        stat_exp_attrs[':d'] = { 'N': ET }
-        stat_exp_attrs[':t'] = { 'S': timebucket }
-        stat_exp_attrs[':o'] = { 'S': Src }
-        stat_exp_attrs[':r'] = { 'S': Dst }
-        #print('s3Object: ' + key)
+        stat_exp_attrs[':a'] = {'N': '1'}
+        stat_exp_attrs[':c'] = {'N': Size}
+        stat_exp_attrs[':d'] = {'N': ET}
+        stat_exp_attrs[':t'] = {'S': timebucket}
+        stat_exp_attrs[':o'] = {'S': Src}
+        stat_exp_attrs[':r'] = {'S': Dst}
+        
+        # Update the DDB table
         try:
             response = client['ddb']['handle'].update_item(
-                TableName = stattable,
-                Key = { 'OriginReplicaBucket': { 'S': statbucket } },
-                UpdateExpression = stat_update_exp,
-                ExpressionAttributeValues = stat_exp_attrs)
+                TableName=stattable,
+                Key={'OriginReplicaBucket': {'S': statbucket}},
+                UpdateExpression=stat_update_exp,
+                ExpressionAttributeValues=stat_exp_attrs)
         except Exception as e:
             print(e)
             print('Table ' + stattable + ' update failed')
@@ -124,29 +150,29 @@ def message_handler(event):
 
         # Initialize a counter for failed replications for the source bucket
         if not Src in initfail:
-            initfail[Src]='foo'
+            initfail[Src] = 'foo'
         if Dst != 'FAILED' and initfail[Src] != timebucket:
             print('Initializing FAILED bucket for ' + Src + ':' + timebucket)
-            statbucket=Src + ':FAILED:' + timebucket
+            statbucket = Src + ':FAILED:' + timebucket
             stat_exp_attrs = {}
             # -------------------------------------------------------------
             # Build the DDB UpdateExpression
             stat_update_exp = 'SET timebucket = :t, source_bucket = :o, dest_bucket = :r ADD objects :a, size :c, elapsed :d'
             # -------------------------------------------------------------
             # push the first attr: s3Object
-            stat_exp_attrs[':a'] = { 'N': '0' }
-            stat_exp_attrs[':c'] = { 'N': '1' }
-            stat_exp_attrs[':d'] = { 'N': '1' }
-            stat_exp_attrs[':t'] = { 'S': timebucket }
-            stat_exp_attrs[':o'] = { 'S': Src }
-            stat_exp_attrs[':r'] = { 'S': 'FAILED' }
-            #print('s3Object: ' + key)
+            stat_exp_attrs[':a'] = {'N': '0'}
+            stat_exp_attrs[':c'] = {'N': '1'}
+            stat_exp_attrs[':d'] = {'N': '1'}
+            stat_exp_attrs[':t'] = {'S': timebucket}
+            stat_exp_attrs[':o'] = {'S': Src}
+            stat_exp_attrs[':r'] = {'S': 'FAILED'}
+
             try:
                 response = client['ddb']['handle'].update_item(
-                    TableName = stattable,
-                    Key = { 'OriginReplicaBucket': { 'S': statbucket } },
-                    UpdateExpression = stat_update_exp,
-                    ExpressionAttributeValues = stat_exp_attrs)
+                    TableName=stattable,
+                    Key={'OriginReplicaBucket': {'S': statbucket }},
+                    UpdateExpression=stat_update_exp,
+                    ExpressionAttributeValues=stat_exp_attrs)
                 initfail[Src] = timebucket
             except Exception as e:
                 print(e)
@@ -190,6 +216,17 @@ def message_handler(event):
     else:
         evdata = event
 
+    if DEBUG > 1:
+        print(json.dumps(evdata))
+
+    #-----------------------------------------------------------------
+    # Quietly ignore all but PutObject
+    #
+    if evdata['detail']['eventName'] != 'PutObject':
+        if DEBUG > 0:
+            print('Ignoring ' + evdata['detail']['eventName'] + ' event')
+        return
+
     #-----------------------------------------------------------------
     #
     # Collect the data we want for the DynamoDB table
@@ -206,12 +243,12 @@ def message_handler(event):
     # Build th e DDB UpdateExpression
     ddb_update_exp = 'set s3Object = :a'
     # push the first attr: s3Object
-    ddb_exp_attrs[':a'] = { 'S': key }
+    ddb_exp_attrs[':a'] = {'S': key}
 
 
     # establish s3 client per region, but only once.
     if not region in s3client:
-        s3client[region]= boto3.client('s3',region)
+        s3client[region] = boto3.client('s3', region)
 
     # -----------------------------------------------------------------
     # Do a head_object. If the object no longer exists just return.
@@ -221,21 +258,50 @@ def message_handler(event):
             Bucket=bucket,
             Key=key
             )
+    except ClientError as e:
+        #  {  "Error": {
+        #         "Code": "403",
+        #         "Message": "Forbidden"
+        #     },
+        #     "ResponseMetadata": {
+        #         "RequestId": "B7C8873E3C067128",
+        #         "HostId": "kYARs5PKMuah57ewyzYq6l5laO4xu9fcWFYVnEPLMHeqNSF4yLhrYIhbbUT0Tw7hp3f2PgCQO9E=",
+        #         "HTTPStatusCode": 403,
+        #         "HTTPHeaders": {
+        #             "x-amz-request-id": "B7C8873E3C067128",
+        #             "x-amz-id-2": "kYARs5PKMuah57ewyzYq6l5laO4xu9fcWFYVnEPLMHeqNSF4yLhrYIhbbUT0Tw7hp3f2PgCQO9E=",
+        #             "content-type": "application/xml",
+        #             "transfer-encoding": "chunked",
+        #             "date": "Tue, 25 Sep 2018 11:58:48 GMT",
+        #             "server": "AmazonS3"
+        #         },
+        #         "RetryAttempts": 0
+        #     }
+        #   }
+
+        if e.response['Error']['Code'] == '403':
+            print('IGNORING: CRRMonitor does not have access to Object - ' + \
+                evdata['detail']['requestParameters']['bucketName'] + '/' + \
+                evdata['detail']['requestParameters']['key'])
+        elif e.response['Error']['Code'] == '404':
+            print('IGNORING: Object no longer exists - ' + \
+                evdata['detail']['requestParameters']['bucketName'] + '/' + \
+                evdata['detail']['requestParameters']['key'])
+
+        else:
+            # Need to improve this to recognize specifically a 404
+            print('Unhandled ClientError ' + str(e))
+            print(json.dumps(e.response))
+
+        #print('Removing from queue / ignoring')
+        return
+
     except Exception as e:
         # Need to improve this to recognize specifically a 404
-        print('Error ' + str(e))
-        if e == 404:
-            print('WARNING: Object no longer exists - ' + evdata['detail']['requestParameters']['bucketName'] + '/' + evdata['detail']['requestParameters']['key'])
-
+        print('Unandled Exception ' + str(e))
         print('Removing from queue / ignoring')
         return
 
-    #    print(e)
-    #    print('Error getting headers for object')
-    #    if response['ResponseMetadata']['HTTPStatusCode'] == 404:
-    #        return 404
-    #    else:
-    #        raise e
 
     # 2) check that the x-amz-replication-status header is present
     #    response['ResponseMetadata']['HTTPHeaders']['x-amz-replication-status']
@@ -260,7 +326,8 @@ def message_handler(event):
     # If this object has no x-amz-replication-status header then we can leave
     if 'x-amz-replication-status' not in headers:
         # This is not a replicated object - get out
-        # print('Not a replicated object')
+        if DEBUG > 0:
+            print('Not a replicated object')
         return()
 
     # repstatus is a pointer to the headers (for code clarity)
@@ -274,7 +341,7 @@ def message_handler(event):
     #
     try:
         response = client['ddb']['handle'].describe_table(
-            TableName = ddbtable
+            TableName=ddbtable
         )
     except Exception as e:
         print(e)
@@ -284,24 +351,24 @@ def message_handler(event):
     # Update object size
     objsize = headers['content-length']
     ddb_update_exp += ', ObjectSize = :s'
-    ddb_exp_attrs[':s'] = { 'N': objsize }
+    ddb_exp_attrs[':s'] = {'N': objsize}
 
-    ETag = { 'S': headers['etag'][1:-1] + ':' + headers['x-amz-version-id'][1:-1] }
+    ETag = {'S': headers['etag'][1:-1] + ':' + headers['x-amz-version-id'][1:-1]}
 
     # -----------------------------------------------------------------
     # If the object already has a DDB record get it
     #
     ddbdata = client['ddb']['handle'].get_item(
-        TableName = ddbtable,
-        Key = { 'ETag': ETag },
-        ConsistentRead = True
+        TableName=ddbtable,
+        Key={'ETag': ETag},
+        ConsistentRead=True
         )
 
-    # Debug
-    ddbitem = {}
+    ddbitem = {} # reset the dict
     if 'Item' in ddbdata:
         ddbitem = ddbdata['Item']
-        #print("DDB record: " + json.dumps(ddbitem, indent=2))
+        if DEBUG > 4:
+            print("DDB record: " + json.dumps(ddbitem, indent=2))
 
     #
     # Is this a REPLICA? Use timestamp as completion time
@@ -314,45 +381,50 @@ def message_handler(event):
     if repstatus == 'REPLICA':
         # print('Processing a REPLICA object: ' + ETag['S'])
         ddb_update_exp += ', s3Replica = :d'
-        ddb_exp_attrs[':d'] = { 'S': bucket }
+        ddb_exp_attrs[':d'] = {'S': bucket}
         #print('s3Replica: ' + bucket)
 
         ddb_update_exp += ', end_datetime = :e'
-        ddb_exp_attrs[':e'] = { 'S': now } # 'now' is from the event data
+        ddb_exp_attrs[':e'] = {'S': now} # 'now' is from the event data
         #print('end_datetime: ' + now)
 
         # Set the ttl
         purge = datetime.strptime(now, timefmt) - timedelta(hours=purge_thresh) # datetime object
         ttl = purge.strftime('%s')
         ddb_update_exp += ', itemttl = :p'
-        ddb_exp_attrs[':p'] = { 'N': ttl }
+        ddb_exp_attrs[':p'] = {'N': ttl}
 
         # If this is a replica then status is COMPLETE
         ddb_update_exp += ', replication_status = :b'
-        ddb_exp_attrs[':b'] = { 'S': 'COMPLETED' }
+        ddb_exp_attrs[':b'] = {'S': 'COMPLETED'}
         #print('replication_status: COMPLETED (implied)')
 
         if 'start_datetime' in ddbitem and 'crr_rate' not in ddbitem:
             etime = datetime.strptime(now, timefmt) - datetime.strptime(ddbitem['start_datetime']['S'], timefmt)
-            etimesecs = ( etime.days * 24 * 60 * 60 ) + etime.seconds
+            etimesecs = (etime.days * 24 * 60 * 60) + etime.seconds
             #print("Calculate elapsed time in seconds")
             crr_rate = int(objsize) * 8 / (etimesecs + 1) # Add 1 to prevent /0 errors
             ddb_update_exp += ', crr_rate = :r'
-            ddb_exp_attrs[':r'] = { 'N': str(crr_rate) }
+            ddb_exp_attrs[':r'] = {'N': str(crr_rate)}
             #print('crr_rate: ', crr_rate)
 
             ddb_update_exp += ', elapsed = :t'
-            ddb_exp_attrs[':t'] = { 'N': str(etimesecs) }
+            ddb_exp_attrs[':t'] = {'N': str(etimesecs)}
             #print('elapsed: ', etimesecs)
-            log_statistics(ddbitem['s3Origin']['S'],bucket,ddbitem['start_datetime']['S'],objsize,str(etimesecs),300)
+            log_statistics(
+                ddbitem['s3Origin']['S'],
+                bucket,
+                ddbitem['start_datetime']['S'],
+                objsize,
+                str(etimesecs),
+                300)
     # -----------------------------------------------------------------
     # Or is this a SOURCE? Use timestamp as replication start time
     #
     else:
-        #putitem['s3Origin'] = { 'Value': { 'S': bucket }, 'Action': 'PUT' }
+
         ddb_update_exp += ', s3Origin = :f'
-        ddb_exp_attrs[':f'] = { 'S': bucket }
-        #print('This is an ORIGINAL object')
+        ddb_exp_attrs[':f'] = {'S': bucket}
 
         # If this is not a replica then do not report status. It's not important and
         # makes the DynamoDB update much more complicated. Just get the start time
@@ -362,29 +434,32 @@ def message_handler(event):
         if repstatus == 'COMPLETED' or repstatus == 'FAILED' or repstatus == 'PENDING':
             # print('Processing a ORIGINAL object: ' + ETag['S'] + ' status: ' + repstatus)
             ddb_update_exp += ', start_datetime = :g'
-            ddb_exp_attrs[':g'] = { 'S': now }
+            ddb_exp_attrs[':g'] = {'S': now}
             # ---------------------------------------------------------
             # If we already got the replica event...
             #
             if 'end_datetime' in ddbitem and 'crr_rate' not in ddbitem:
                 etime = datetime.strptime(ddbitem['end_datetime']['S'], timefmt) - datetime.strptime(now, timefmt)
-                etimesecs = ( etime.days * 24 * 60 * 60 ) + etime.seconds
+                etimesecs = (etime.days * 24 * 60 * 60) + etime.seconds
                 #print("Calculate elapsed time in seconds")
                 crr_rate = int(objsize) * 8 / (etimesecs + 1) # Add 1 to prevent /0 errors
                 ddb_update_exp += ', crr_rate = :r'
-                ddb_exp_attrs[':r'] = { 'N': str(crr_rate) }
-                #print('crr_rate: ', crr_rate)
+                ddb_exp_attrs[':r'] = {'N': str(crr_rate)}
 
                 # Set the ttl
                 purge = datetime.strptime(ddbitem['end_datetime']['S'], timefmt) - timedelta(hours=purge_thresh) # datetime object
                 ttl = purge.strftime('%s')
                 ddb_update_exp += ', itemttl = :p'
-                ddb_exp_attrs[':p'] = { 'N': ttl }
+                ddb_exp_attrs[':p'] = {'N': ttl}
 
                 ddb_update_exp += ', elapsed = :t'
-                ddb_exp_attrs[':t'] = { 'N': str(etimesecs) }
-                #print('elapsed: ', etimesecs)
-                log_statistics(bucket,ddbitem['s3Replica']['S'],ddbitem['end_datetime']['S'],objsize,str(etimesecs),300)
+                ddb_exp_attrs[':t'] = {'N': str(etimesecs)}
+
+                log_statistics(
+                    bucket,ddbitem['s3Replica']['S'], 
+                    ddbitem['end_datetime']['S'], 
+                    objsize,
+                    str(etimesecs),300)
             # ---------------------------------------------------------
             # We did not yet get the replica event
             #
@@ -393,8 +468,14 @@ def message_handler(event):
                     # If replication failed this is the only time we will see this object.
                     # Update the status to FAILED
                     ddb_update_exp += ', replication_status = :b'
-                    ddb_exp_attrs[':b'] = { 'S': 'FAILED' }
-                    log_statistics(bucket,'FAILED',now,'0','1',300)
+                    ddb_exp_attrs[':b'] = {'S': 'FAILED'}
+                    log_statistics(
+                        bucket,
+                        'FAILED',
+                        now,
+                        '0',
+                        '1',
+                        300)
 
         else:
             print('Unknown Replication Status: ' + repstatus)
@@ -405,10 +486,10 @@ def message_handler(event):
 # Create a record in the DDB table
     try:
         response = client['ddb']['handle'].update_item(
-            TableName = ddbtable,
-            Key = { 'ETag': ETag },
-            UpdateExpression = ddb_update_exp,
-            ExpressionAttributeValues = ddb_exp_attrs)
+            TableName=ddbtable,
+            Key={'ETag': ETag},
+            UpdateExpression=ddb_update_exp,
+            ExpressionAttributeValues=ddb_exp_attrs)
     except Exception as e:
         print(e)
         print('Table ' + ddbtable + ' update failed')
@@ -437,7 +518,7 @@ def message_handler(event):
 # When I spawn a child process I will change "detail-type" to "Spawned Event"
 # and add "child-number", where 0 is the top-level
 # =====================================================================
-def queue_handler(event,context):
+def queue_handler(event, context):
     cnum = 0
     if 'child-number' in event:
         cnum = int(event['child-number'])
@@ -465,14 +546,15 @@ def queue_handler(event,context):
         AttributeNames=['ApproximateNumberOfMessages']
         )
 
-    if response['ResponseMetadata']['HTTPStatusCode'] <> 200:
+    if response['ResponseMetadata']['HTTPStatusCode'] != 200:
         print('Bad status from ' + queue + ': ' + response['ResponseMetadata']['HTTPStatusCode'])
         return
 
-    queue_sz=int(response['Attributes']['ApproximateNumberOfMessages'])
+    queue_sz = int(response['Attributes']['ApproximateNumberOfMessages'])
     queue_backlog = queue_sz - message_floor
 
-    print('INFO [CNUM-' + str(cnum) + '] Queue is ' + str(queue_sz) + ' deep. Backlog is ' + str(queue_backlog))
+    print('INFO [CNUM-' + str(cnum) + '] Queue is ' + str(queue_sz) + \
+        ' deep. Backlog is ' + str(queue_backlog))
 
     # We subtracted the number of messages for which processes are already
     # running. If the backlog is still too deep them first spawn another child,
@@ -502,14 +584,14 @@ def queue_handler(event,context):
     # Now we get to work. Process messages from the queue until empty
     # or we time out. This is the secret sauce to our horizontal scale
     print('INFO [CNUM-' + str(cnum) + '] Priming read from SQS...')
-    msg_ctr=0 # keep a count of messages processed
-    sqs_msgs=client['sqs']['handle'].receive_message(
+    msg_ctr = 0 # keep a count of messages processed
+    sqs_msgs = client['sqs']['handle'].receive_message(
         QueueUrl=queue_endpoint,
-        AttributeNames=[ 'All' ],
+        AttributeNames=['All'],
         MaxNumberOfMessages=10,
         VisibilityTimeout=60
     )
-    sqs_delete=[]
+    sqs_delete = []
     while 'Messages' in sqs_msgs:
         print('INFO [CNUM-' + str(cnum) + '] Processing ' + str(len(sqs_msgs['Messages'])) + ' messages')
         for message in sqs_msgs['Messages']:
@@ -517,24 +599,24 @@ def queue_handler(event,context):
             # If we did not get a 0 return code let the record time out back
             # back into the queue
             if not rc:
-                sqs_delete.append({ 'Id': message['MessageId'], 'ReceiptHandle':  message['ReceiptHandle'] })
-                msg_ctr+=1 # keep a count of messages processed
+                sqs_delete.append({'Id': message['MessageId'], 'ReceiptHandle':  message['ReceiptHandle']})
+                msg_ctr += 1 # keep a count of messages processed
 
         if len(sqs_delete) > 0:
             # Delete the messages we just processed
-            response=client['sqs']['handle'].delete_message_batch(
+            response = client['sqs']['handle'].delete_message_batch(
                 QueueUrl=queue_endpoint,
                 Entries=sqs_delete
             )
             if len(response['Successful']) < len(sqs_delete):
                 print('ERROR[CNUM-' + str(cnum) + ']: processed ' + str(len(sqs_msgs)) + ' messages but only deleted ' + str(len(response['Successful'])) + ' messages')
 
-        sqs_delete=[] # reset the list
+        sqs_delete = [] # reset the list
 
         print('INFO [CNUM-' + str(cnum) + '] Reading from SQS...')
-        sqs_msgs=client['sqs']['handle'].receive_message(
+        sqs_msgs = client['sqs']['handle'].receive_message(
             QueueUrl=queue_endpoint,
-            AttributeNames=[ 'All' ],
+            AttributeNames=['All'],
             MaxNumberOfMessages=10,
             VisibilityTimeout=60
         )
@@ -544,7 +626,7 @@ def queue_handler(event,context):
 ###### M A I N ######
 client = connect_clients(client)
 try:
-    queue_endpoint=client['sqs']['handle'].get_queue_url(
+    queue_endpoint = client['sqs']['handle'].get_queue_url(
         QueueName=queue
     )['QueueUrl']
 except Exception as e:

@@ -1,0 +1,437 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "(SO0022) - CRR Monitor Remote Agent: Cross-Region Replication Monitor Remote Agent for S3. This template creates necessary IAM policies and CloudWatch Event configuration to allow the CRR Manager account to monitor S3 Cross Region Replication.",
+    "Parameters": {
+    "CRRMonitorAccount": {
+      "Description": "AWS AccountId where the CRR Monitor manager component will run.",
+      "Type": "String"
+    }
+  },
+  "Mappings": {
+    "Function": {
+      "CustomResourceDeployAgent": {
+        "S3Bucket": "%%DIST_BUCKET_NAME%%",
+        "S3Key": "%%SOLUTION_NAME%%/%%VERSION%%/CRRdeployagent.zip",
+        "Description": "crr: CloudFormation custom resource function invoked during CloudFormation create, update, and delete stack operations."
+      },
+      "SolutionHelperFunction": {
+        "S3Bucket": "%%DIST_BUCKET_NAME%%",
+        "S3Key": "%%SOLUTION_NAME%%/%%VERSION%%/solution-helper.zip",
+        "Description": "crr: CloudFormation custom resource function for generating UUID."
+      }
+    }
+  },
+  "Resources": {
+    "CRRMonitorRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "CRRMonitorRole",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": { "Ref": "CRRMonitorAccount" }
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [
+          {
+            "PolicyName": "CRRMonitorPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "S3ListPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:ListBucket",
+                    "s3:GetReplicationConfiguration",
+                    "s3:GetObject"
+                  ],
+                  "Resource": [
+                    "arn:aws:s3:::*",
+                    "arn:aws:s3:::*/*"
+                  ]
+                },
+                {
+                  "Sid": "S3Perms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:ListAllMyBuckets",
+                    "s3:HeadBucket"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "Metadata": {
+        "cfn_nag": {
+          "rules_to_suppress": [
+            {
+              "id": "W11",
+              "reason": "The cloudwatch:ListMetrics,s3:ListAllMyBuckets action requires the wildcard ('*') resource identifier to function properly.Supporting documentation available at (https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/iam-identity-based-access-control-cw.html) and (https://docs.aws.amazon.com/AmazonS3/latest/dev/using-with-s3-actions.html)"
+            },
+            {
+              "id": "W28",
+              "reason": "CRRMonitor Role name has been specified to assume role"
+            }
+          ]
+        }
+      }
+    },
+    "CRRMonitorRemoteDeployRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [
+          {
+            "PolicyName": "CRRMonitorDeployPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "CloudTrailLogPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogStreams"
+                  ],
+                  "Resource": [
+                    {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "arn:aws:logs:",
+                            {
+                              "Ref": "AWS::Region"
+                            },
+                            ":",
+                            {
+                              "Ref": "AWS::AccountId"
+                            },
+                            ":log-group:*"
+                          ]
+                        ]
+                    }
+                  ]
+                },
+                {
+                  "Sid": "S3ListPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:ListBucket",
+                    "s3:GetObjectVersionForReplication",
+                    "s3:GetReplicationConfiguration",
+                    "s3:GetObject"
+                  ],
+                  "Resource": [
+                    "arn:aws:s3:::*",
+                    "arn:aws:s3:::*/*"
+                  ]
+                },
+                {
+                  "Sid": "S3Perms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:ListAllMyBuckets",
+                    "s3:HeadBucket"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "DeployAgentEC2Perms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:DescribeRegions"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "EventBusPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "events:PutTargets"
+                  ],
+                  "Resource": "*",
+                  "Condition": {
+                    "ArnLike": {
+                      "events:TargetArn": [
+                        { "Fn::Join": [
+                            "",
+                            [
+                              "arn:aws:events:*:",
+                              {
+                                "Ref": "CRRMonitorAccount"
+                              },
+                              ":event-bus/default"
+                            ]
+                          ] 
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "Sid": "PutEventsPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "events:PutRule"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "EventsPerms",
+                  "Effect": "Allow",
+                  "Action": [
+                    "events:DeleteRule",
+                    "events:EnableRule",
+                    "events:RemoveTargets"
+                  ],
+                  "Resource": [
+                    { "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:events:*:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":rule/CRR*"
+                      ]
+                    ] }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "Metadata": {
+        "cfn_nag": {
+          "rules_to_suppress": [
+            {
+              "id": "W11",
+              "reason": "The s3:ListAllMyBuckets,ec2:DescribeRegions,events:PutTargets action requires the wildcard ('*') resource identifier to function properly.Supporting documentation available at (https://docs.aws.amazon.com/AmazonS3/latest/dev/using-with-s3-actions.html),(https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ExamplePolicies_EC2.html) and (https://docs.aws.amazon.com/AmazonCloudWatch/latest/events/permissions-reference-cwe.html)"
+
+            }
+          ]
+        }
+      }
+    },
+    "CRRDeployRemoteAgentLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Join": [
+              "",
+              [
+                {
+                  "Fn::FindInMap": [
+                    "Function",
+                    "CustomResourceDeployAgent",
+                    "S3Bucket"
+                  ]
+                },
+                "-",
+                {
+                  "Ref": "AWS::Region"
+                }
+              ]
+            ]
+          },
+          "S3Key": {
+            "Fn::FindInMap": [
+              "Function",
+              "CustomResourceDeployAgent",
+              "S3Key"
+            ]
+          }
+        },
+        "Handler": "CRRdeployagent.handler",
+        "FunctionName": "CRRDeployAgent",
+        "Role": { "Fn::GetAtt": [ "CRRMonitorRemoteDeployRole", "Arn" ] },
+        "Runtime": "python3.7",
+        "Timeout": 300
+      }
+    },
+    "CustomDeploy": {
+      "Type": "Custom::DeployAgent",
+      "Properties": {
+        "ServiceToken": { "Fn::GetAtt": [ "CRRDeployRemoteAgentLambda", "Arn" ] },
+        "CRRMonitorAccount": { "Ref": "CRRMonitorAccount" }
+      }
+    },
+    "SolutionHelperRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [
+          {
+            "PolicyName": "Custom_Solution_Helper_Permissions",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:logs:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":log-group:/aws/lambda/*"
+                      ]
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "Metadata": {
+        "cfn_nag": {
+          "rules_to_suppress": [
+            {
+              "id": "W11",
+              "reason": "Requires log-group level access :log-group:/aws/lambda/*"
+            }
+          ]
+        }
+      }
+    },
+    "SolutionHelper": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Handler": "solution-helper.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "SolutionHelperRole",
+            "Arn"
+          ]
+        },
+        "Description": "This function creates a CloudFormation custom lambda resource that creates custom lambda functions by finding and replacing specific values from existing lambda function code.",
+        "Code": {
+          "S3Bucket": {
+            "Fn::Join": [
+              "",
+              [
+                {
+                  "Fn::FindInMap": [
+                    "Function",
+                    "SolutionHelperFunction",
+                    "S3Bucket"
+                  ]
+                },
+                "-",
+                {
+                  "Ref": "AWS::Region"
+                }
+              ]
+            ]
+          },
+          "S3Key": {
+            "Fn::FindInMap": [
+              "Function",
+              "SolutionHelperFunction",
+              "S3Key"
+            ]
+          }
+        },
+        "Runtime": "python3.7",
+        "Timeout": 300
+      }
+    },
+    "UUIDGenerator": {
+      "Type": "Custom::UUIDGenerator",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "SolutionHelper",
+            "Arn"
+          ]
+        },
+        "Region": { "Ref": "AWS::Region" }
+      }
+    }
+  },
+  "Outputs": {
+    "UUID": {
+      "Description": "Newly created random UUID.",
+      "Value": {
+        "Fn::GetAtt": [
+          "UUIDGenerator",
+          "UUID"
+        ]
+      }
+    }
+  },
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": {
+            "default": "Deployment"
+          },
+          "Parameters": [
+            "CRRMonitorAccount"
+          ]
+        }
+      ],
+      "ParameterLabels" : {
+        "CRRMonitorAccount" : { "default" : "CRR Monitor Account" }
+      }
+    }
+  }
+}

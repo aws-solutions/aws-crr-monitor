@@ -1,3 +1,21 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+##############################################################################
+#  Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.   #
+#                                                                            #
+#  Licensed under the Amazon Software License (the 'License'). You may not   #
+#  use this file except in compliance with the License. A copy of the        #
+#  License is located at                                                     #
+#                                                                            #
+#      http://aws.amazon.com/asl/                                            #
+#                                                                            #
+#  or in the 'license' file accompanying this file. This file is distributed #
+#  on an 'AS IS' BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,        #
+#  express or implied. See the License for the specific language governing   #
+#  permissions and limitations under the License.                            #
+##############################################################################
+
 from __future__ import print_function
 
 import json
@@ -5,8 +23,6 @@ import boto3
 import os
 import logging
 from datetime import datetime,timedelta
-from urllib2 import Request
-from urllib2 import urlopen
 
 log = logging.getLogger()
 log.setLevel(logging.INFO)
@@ -34,7 +50,6 @@ stattable = ddbtable + 'Statistics'
 stream_to_kinesis = getparm('stream_to_kinesis','No')
 kinesisfirestream = getparm('kinesisfirestream', ddbtable + 'DeliveryStream')
 stack_name = getparm('stack_name','Nil')
-send_anonymous_data = getparm('send_anonymous_data','No')
 
 timefmt = '%Y-%m-%dT%H:%M:%SZ'
 roundTo = getparm('roundto', 300) # 5 minute buckets for CW metrics
@@ -286,10 +301,6 @@ def lambda_handler(event, context):
     if len(response['Items']) == 0:
         print('WARNING: No stats bucket found for ' + statbucket)
 
-    ## Trigger sol_helper to collect stats data
-    if send_anonymous_data == 'Yes':
-       sol_helper(response)
-
     for i in response['Items']:
         post_stats(i)
 
@@ -313,61 +324,6 @@ def lambda_handler(event, context):
     # Archive to firehose
     if stream_to_kinesis == 'Yes':
         firehose(ts)
-
-def sol_helper(response):
-    print('sol_helper')
-    print(response)
-    try:
-        cf = boto3.client('cloudformation')
-        bucket_dict = []
-        count = 1
-        for item in response['Items']:
-            if item['dest_bucket']['S'] != 'FAILED':
-                resp_dict = { "bucket" : count, "objects": item['objects']['N'], "size": item['size']['N'] }
-                bucket_dict.append(resp_dict)
-                count = count + 1
-
-        dataDict = bucket_dict
-        postDict = {}
-        outputs = {}
-        TimeNow = datetime.utcnow().isoformat()
-        TimeStamp = str(TimeNow)
-
-        # Read output variables from CloudFormation Template
-        # stack_name = context.invoked_function_arn.split(':')[6].rsplit('-', 2)[0]
-        print(stack_name)
-        response = cf.describe_stacks(StackName=stack_name)
-        for e in response['Stacks'][0]['Outputs']:
-            outputs[e['OutputKey']] = e['OutputValue']
-        uuid = outputs['UUID']
-        sendData = outputs['AnonymousData']
-        print(sendData)
-        print(uuid)
-
-        # Send anonymous data
-        if sendData == "Yes" and len(bucket_dict) > 0:
-            postDict['Data'] = dataDict
-            postDict['TimeStamp'] = TimeStamp
-            postDict['Solution'] = 'SO0022'
-            postDict['UUID'] = uuid
-            print('HouseKeeping')
-
-            # API Gateway URL to make HTTP POST call
-            url = 'https://metrics.awssolutionsbuilder.com/generic'
-            data = json.dumps(postDict)
-            headers = {'content-type': 'application/json'}
-            req = Request(url, data, headers)
-            rsp = urlopen(req)
-            content = rsp.read()
-            rspcode = rsp.getcode()
-            log.debug('Response Code: {}'.format(rspcode))
-            log.debug('Response Content: {}'.format(content))
-
-    except Exception as e:
-        print(e)
-        raise e
-
-
 
 ######## M A I N ########
 client = connect_clients(client)

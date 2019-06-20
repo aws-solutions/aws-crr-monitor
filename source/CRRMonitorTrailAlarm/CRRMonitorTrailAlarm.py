@@ -1,6 +1,25 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+##############################################################################
+#  Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.   #
+#                                                                            #
+#  Licensed under the Amazon Software License (the 'License'). You may not   #
+#  use this file except in compliance with the License. A copy of the        #
+#  License is located at                                                     #
+#                                                                            #
+#      http://aws.amazon.com/asl/                                            #
+#                                                                            #
+#  or in the 'license' file accompanying this file. This file is distributed #
+#  on an 'AS IS' BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,        #
+#  express or implied. See the License for the specific language governing   #
+#  permissions and limitations under the License.                            #
+##############################################################################
+
 from __future__ import print_function
 
 import boto3
+import json
 
 # Unable to import module? You need to zip CRRdeployagent.py with
 # cfn_resource.py!!
@@ -10,7 +29,7 @@ handler = cfn_resource.Resource()
 
 source_buckets = []
 
-client={
+client = {
     's3': { 'service': 's3' },
     'cloudtrail': { 'service': 'cloudtrail'},
     'cloudwatch': { 'service': 'cloudwatch'}
@@ -28,16 +47,16 @@ def connect_clients(clients_to_connect):
     for c in clients_to_connect:
         try:
             if 'region' in clients_to_connect[c]:
-                clients_to_connect[c]['handle']=boto3.client(clients_to_connect[c]['service'], region_name=clients_to_connect[c]['region'])
+                clients_to_connect[c]['handle'] = boto3.client(clients_to_connect[c]['service'], region_name=clients_to_connect[c]['region'])
             else:
-                clients_to_connect[c]['handle']=boto3.client(clients_to_connect[c]['service'])
+                clients_to_connect[c]['handle'] = boto3.client(clients_to_connect[c]['service'])
         except Exception as e:
             print(e)
             print('Error connecting to ' + clients_to_connect[c]['service'])
             raise e
     return clients_to_connect
 
-def create_trail(trail_name,trail_log_bucket):
+def create_trail(trail_name, trail_log_bucket):
     print('Create Trail: ')
     try:
         response = client['cloudtrail']['handle'].create_trail(
@@ -102,10 +121,6 @@ def get_bucket_replication(bucket_name):
 
 def get_source_bucket_arn(response):
     try:
-        # source_bucket = response['ReplicationConfiguration']['Rules'][0]['ID']
-        # src_bucket = 'arn:aws:s3:::' + source_bucket
-        # if response['ReplicationConfiguration']['Rules'][0]['Prefix'] == '':
-        #     src_bucket = src_bucket + '/'
         src_bucket = 'arn:aws:s3:::' + response + '/'
     except Exception as e:
         print(e)
@@ -114,9 +129,12 @@ def get_source_bucket_arn(response):
     return src_bucket
 
 def get_replica_bucket_arn(response):
+    print(json.dumps(response))
     try:
         dest_bucket_arn = response['ReplicationConfiguration']['Rules'][0]['Destination']['Bucket']
-        dest_bucket_prefix = response['ReplicationConfiguration']['Rules'][0]['Prefix']
+        dest_bucket_prefix = ''
+        if 'Prefix' in response['ReplicationConfiguration']['Rules'][0]:
+            dest_bucket_prefix = response['ReplicationConfiguration']['Rules'][0]['Prefix']
         replica_bucket = dest_bucket_arn + '/' + dest_bucket_prefix
     except Exception as e:
         print(e)
@@ -128,11 +146,11 @@ def put_event_selectors(trail_name,crr_buckets):
     print('Data Events: ')
     try:
 
-         client['cloudtrail']['handle'].put_event_selectors(
+        client['cloudtrail']['handle'].put_event_selectors(
             TrailName=trail_name,
             EventSelectors=[
                 {
-                    'ReadWriteType': 'All',
+                    'ReadWriteType': 'WriteOnly',
                     'IncludeManagementEvents': True,
                     'DataResources': [
                         {
@@ -140,7 +158,7 @@ def put_event_selectors(trail_name,crr_buckets):
                             'Values': crr_buckets
                         },
                     ]
-                 },
+                },
             ]
         )
     except Exception as e:
@@ -148,7 +166,7 @@ def put_event_selectors(trail_name,crr_buckets):
         print('Data Events Trail')
         raise e
 
-def put_metric_alarm(sns_topic,src_buckets):
+def put_metric_alarm(sns_topic, src_buckets):
     print('Metric Alarms:')
     try:
         for bucket in src_buckets:
@@ -173,7 +191,7 @@ def put_metric_alarm(sns_topic,src_buckets):
                 Threshold=0.0,
                 ComparisonOperator='GreaterThanThreshold'
 
-        )
+            )
     except Exception as e:
         print(e)
         print('Data Events Trail')
@@ -216,14 +234,14 @@ def create_trail_alarm(event, context):
 
     ### Trail Creation
 
-    create_trail(trail_name,trail_log_bucket)
+    create_trail(trail_name, trail_log_bucket)
     crr_buckets = get_buckets()
-    put_event_selectors(trail_name,crr_buckets)
+    put_event_selectors(trail_name, crr_buckets)
 
     ### Metric Alarm
 
     put_metric_data(source_buckets) #Source buckets are derived from get_buckets() call
-    put_metric_alarm(sns_topic_arn,source_buckets)
+    put_metric_alarm(sns_topic_arn, source_buckets)
     return { 'PhysicalResourceId': 'CRRMonitorTrailAlarm' }
 
 ###### M A I N ######
@@ -278,6 +296,3 @@ def delete_trail_alarm(event, context):
         )
 
     return {}
-
-
-
