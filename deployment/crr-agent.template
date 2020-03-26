@@ -4,19 +4,21 @@
     "Parameters": {
     "CRRMonitorAccount": {
       "Description": "AWS AccountId where the CRR Monitor manager component will run.",
-      "Type": "String"
+      "AllowedPattern": "[0-9]{12}",
+      "Type": "String",
+      "ConstraintDescription": "Please enter a 12-digit AWS Account ID"
     }
   },
   "Mappings": {
     "Function": {
       "CustomResourceDeployAgent": {
-        "S3Bucket": "%%DIST_BUCKET_NAME%%",
-        "S3Key": "%%SOLUTION_NAME%%/%%VERSION%%/CRRdeployagent.zip",
+        "S3Bucket": "CODE_BUCKET",
+        "S3Key": "SOLUTION_NAME/SOLUTION_VERSION/CRRdeployagent.zip",
         "Description": "crr: CloudFormation custom resource function invoked during CloudFormation create, update, and delete stack operations."
       },
       "SolutionHelperFunction": {
-        "S3Bucket": "%%DIST_BUCKET_NAME%%",
-        "S3Key": "%%SOLUTION_NAME%%/%%VERSION%%/solution-helper.zip",
+        "S3Bucket": "CODE_BUCKET",
+        "S3Key": "SOLUTION_NAME/SOLUTION_VERSION/solution-helper.zip",
         "Description": "crr: CloudFormation custom resource function for generating UUID."
       }
     }
@@ -278,7 +280,7 @@
         "Handler": "CRRdeployagent.handler",
         "FunctionName": "CRRDeployAgent",
         "Role": { "Fn::GetAtt": [ "CRRMonitorRemoteDeployRole", "Arn" ] },
-        "Runtime": "python3.7",
+        "Runtime": "python3.8",
         "Timeout": 300
       }
     },
@@ -389,7 +391,7 @@
             ]
           }
         },
-        "Runtime": "python3.7",
+        "Runtime": "python3.8",
         "Timeout": 300
       }
     },

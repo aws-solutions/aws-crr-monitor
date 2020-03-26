@@ -23,35 +23,38 @@
   "Mappings": {
     "Function": {
       "CustomResourceTrailAlarm": {
-        "S3Bucket": "%%DIST_BUCKET_NAME%%",
-        "S3Key": "%%SOLUTION_NAME%%/%%VERSION%%/CRRMonitorTrailAlarm.zip",
+        "S3Bucket": "CODE_BUCKET",
+        "S3Key": "SOLUTION_NAME/SOLUTION_VERSION/CRRMonitorTrailAlarm.zip",
         "Description": "crr: CloudFormation custom resource function invoked during CloudFormation create, update, and delete stack operations."
       },
       "CustomResourceMonitor": {
-        "S3Bucket": "%%DIST_BUCKET_NAME%%",
-        "S3Key": "%%SOLUTION_NAME%%/%%VERSION%%/CRRMonitor.zip",
+        "S3Bucket": "CODE_BUCKET",
+        "S3Key": "SOLUTION_NAME/SOLUTION_VERSION/CRRMonitor.zip",
         "Description": "crr: CloudFormation custom resource function invoked during CloudFormation create, update, and delete stack operations."
       },
       "CustomResourceHousekeeping": {
-        "S3Bucket": "%%DIST_BUCKET_NAME%%",
-        "S3Key": "%%SOLUTION_NAME%%/%%VERSION%%/CRRMonitorHousekeeping.zip",
+        "S3Bucket": "CODE_BUCKET",
+        "S3Key": "SOLUTION_NAME/SOLUTION_VERSION/CRRMonitorHousekeeping.zip",
         "Description": "crr: CloudFormation custom resource function invoked during CloudFormation create, update, and delete stack operations."
       },
       "CustomResourceHourlyMaint": {
-        "S3Bucket": "%%DIST_BUCKET_NAME%%",
-        "S3Key": "%%SOLUTION_NAME%%/%%VERSION%%/CRRHourlyMaint.zip",
+        "S3Bucket": "CODE_BUCKET",
+        "S3Key": "SOLUTION_NAME/SOLUTION_VERSION/CRRHourlyMaint.zip",
         "Description": "crr: CloudFormation custom resource function invoked during CloudFormation create, update, and delete stack operations."
       },
       "CustomResourceDeployAgent": {
-        "S3Bucket": "%%DIST_BUCKET_NAME%%",
-        "S3Key": "%%SOLUTION_NAME%%/%%VERSION%%/CRRdeployagent.zip",
+        "S3Bucket": "CODE_BUCKET",
+        "S3Key": "SOLUTION_NAME/SOLUTION_VERSION/CRRdeployagent.zip",
         "Description": "crr: CloudFormation custom resource function invoked during CloudFormation create, update, and delete stack operations."
       },
       "SolutionHelperFunction": {
-        "S3Bucket": "%%DIST_BUCKET_NAME%%",
-        "S3Key": "%%SOLUTION_NAME%%/%%VERSION%%/solution-helper.zip",
+        "S3Bucket": "CODE_BUCKET",
+        "S3Key": "SOLUTION_NAME/SOLUTION_VERSION/solution-helper.zip",
         "Description": "crr: CloudFormation custom resource function for generating UUID."
       }
+    },
+    "Send" : {
+      "AnonymousUsage" : { "Data" : "Yes" }
     }
   },
   "Conditions": {
@@ -134,21 +137,6 @@
                         ":table/CRRMonitor*"
                       ]
                     ]
-                  } , {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:aws:lambda:",
-                        {
-                          "Ref": "AWS::Region"
-                        },
-                        ":",
-                        {
-                          "Ref": "AWS::AccountId"
-                        },
-                        ":function:CRR*"
-                      ]
-                    ]
                   } ]
                 },
                 {
@@ -201,40 +189,6 @@
                   }
                 },
                 {
-                  "Sid": "CloudWatchMetrics",
-                  "Effect": "Allow",
-                  "Action": [
-                    "cloudwatch:PutMetricAlarm",
-                    "cloudwatch:DeleteAlarms",
-                    "cloudwatch:EnableAlarmActions"
-                  ],
-                  "Resource": {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:aws:cloudwatch:",
-                        {
-                          "Ref": "AWS::Region"
-                        },
-                        ":",
-                        {
-                          "Ref": "AWS::AccountId"
-                        },
-                        ":*"
-                      ]
-                    ]
-                  }
-                },
-                {
-                  "Sid": "CloudWatchMetricsPerms",
-                  "Effect": "Allow",
-                  "Action": [
-                    "cloudwatch:PutMetricData",
-                    "cloudwatch:ListMetrics"
-                  ],
-                  "Resource": "*"
-                },
-                {
                   "Sid": "SQSQueuePerms",
                   "Effect": "Allow",
                   "Action": [
@@ -275,6 +229,11 @@
                   "Effect": "Allow",
                   "Action": "sts:AssumeRole",
                   "Resource": "arn:aws:iam:::role/CRRMonitorRole"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "kms:Decrypt",
+                  "Resource": { "Fn::GetAtt": ["CRRMonitorKey", "Arn"] }
                 }
               ]
             }
@@ -551,29 +510,6 @@
               "Version": "2012-10-17",
               "Statement": [
                 {
-                  "Sid": "CFNUsers",
-                  "Effect": "Allow",
-                  "Action": [
-                    "cloudformation:DescribeStacks"
-                  ],
-                  "Resource": {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:aws:cloudformation:",
-                        {
-                          "Ref": "AWS::Region"
-                        },
-                        ":",
-                        {
-                          "Ref": "AWS::AccountId"
-                        },
-                        ":stack/*/*"
-                      ]
-                    ]
-                  }
-                },
-                {
                   "Sid": "DynamoDBPerms",
                   "Effect": "Allow",
                   "Action": [
@@ -596,21 +532,6 @@
                           "Ref": "AWS::AccountId"
                         },
                         ":table/CRRMonitor*"
-                      ]
-                    ]
-                  } , {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:aws:lambda:",
-                        {
-                          "Ref": "AWS::Region"
-                        },
-                        ":",
-                        {
-                          "Ref": "AWS::AccountId"
-                        },
-                        ":function:CRR*"
                       ]
                     ]
                   } ]
@@ -637,29 +558,6 @@
                           "Ref": "AWS::AccountId"
                         },
                         ":log-group:*"
-                  ]
-                    ]
-                  }
-                },
-                {
-                  "Sid": "LambdaPerms",
-                  "Effect": "Allow",
-                  "Action": [
-                    "lambda:InvokeFunction"
-                  ],
-                  "Resource": {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:aws:lambda:",
-                        {
-                          "Ref": "AWS::Region"
-                        },
-                        ":",
-                        {
-                          "Ref": "AWS::AccountId"
-                        },
-                        ":function:CRRMonitor"
                   ]
                     ]
                   }
@@ -788,101 +686,8 @@
                         ":table/CRRMonitor*"
                       ]
                     ]
-                   },
-                    {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:aws:lambda:",
-                        {
-                          "Ref": "AWS::Region"
-                        },
-                        ":",
-                        {
-                          "Ref": "AWS::AccountId"
-                        },
-                        ":function:CRR*"
-                      ]
-                     ]
-                  } ]
-                },
-                {
-                    "Sid": "ddbPerms",
-                    "Effect": "Allow",
-                    "Action": "dynamodb:Scan",
-                    "Resource": {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:aws:dynamodb:",
-                        {
-                          "Ref": "AWS::Region"
-                        },
-                        ":",
-                        {
-                          "Ref": "AWS::AccountId"
-                        },
-                        ":table/*/index/*"
-                      ]
-                    ]
                    }
-                },
-                {
-                  "Sid": "LambdaPerms",
-                  "Effect": "Allow",
-                  "Action": [
-                    "lambda:InvokeFunction"
-                  ],
-                  "Resource": {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:aws:lambda:",
-                        {
-                          "Ref": "AWS::Region"
-                        },
-                        ":",
-                        {
-                          "Ref": "AWS::AccountId"
-                        },
-                        ":function:CRRMonitor"
                   ]
-                    ]
-                  }
-                },
-                {
-                  "Sid": "CloudWatchMetrics",
-                  "Effect": "Allow",
-                  "Action": [
-                    "cloudwatch:PutMetricAlarm",
-                    "cloudwatch:DeleteAlarms",
-                    "cloudwatch:EnableAlarmActions"
-                  ],
-                  "Resource": {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "arn:aws:cloudwatch:",
-                        {
-                          "Ref": "AWS::Region"
-                        },
-                        ":",
-                        {
-                          "Ref": "AWS::AccountId"
-                        },
-                        ":*"
-                      ]
-                    ]
-                  }
-                },
-                {
-                  "Sid": "CloudWatchMetricsPerms",
-                  "Effect": "Allow",
-                  "Action": [
-                    "cloudwatch:PutMetricData",
-                    "cloudwatch:ListMetrics"
-                  ],
-                  "Resource": "*"
                 },
                 {
                   "Sid": "S3ListPerms",
@@ -904,6 +709,32 @@
                     "s3:HeadBucket"
                   ],
                   "Resource": "*"
+                },
+                {
+                  "Sid": "LogPermissions",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogStreams"
+                  ],
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:logs:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":log-group:/aws/lambda/CRRHourlyMaint:*"
+                      ]
+                    ]
+                  }
                 }
               ]
             }
@@ -1129,11 +960,25 @@
         "FunctionName": "CRRMonitor",
         "Environment" : {
           "Variables": {
-            "maxtask" : "1800" , "maxspawn" : "20"
+            "maxtask" : "1800" , "maxspawn" : "20",
+            "AnonymousUsage": {
+              "Fn::FindInMap": [
+                "Send",
+                "AnonymousUsage",
+                "Data"
+              ]
+            },
+            "UUID": {
+              "Fn::GetAtt": [
+                "UUIDGenerator",
+                "UUID"
+              ]
+            },
+            "SolutionVersion": "SOLUTION_VERSION"
           }
         },
         "Role": { "Fn::GetAtt": [ "CRRMonitorRole", "Arn" ] },
-        "Runtime": "python3.7",
+        "Runtime": "python3.8",
         "Timeout": 300
       }
     },
@@ -1219,7 +1064,7 @@
         },
         "FunctionName": "CRRMonitorHousekeeping",
         "Role": { "Fn::GetAtt": [ "CRRMonitorHouseKeepingRole", "Arn" ] },
-        "Runtime": "python3.7",
+        "Runtime": "python3.8",
         "Timeout": 300
       },
       "DependsOn": [
@@ -1304,7 +1149,7 @@
         "Handler": "CRRHourlyMaint.lambda_handler",
         "FunctionName": "CRRHourlyMaint",
         "Role": { "Fn::GetAtt": [ "CRRHourlyMaintRole", "Arn" ] },
-        "Runtime": "python3.7",
+        "Runtime": "python3.8",
         "Timeout": 300
       },
       "DependsOn": [
@@ -1359,7 +1204,12 @@
     "CRRMonitorQueue": {
       "Type": "AWS::SQS::Queue",
       "Properties": {
-        "QueueName": { "Fn::Join": [ "", [ "CRRMonitor", "Queue" ] ] }
+        "QueueName": { "Fn::Join": [ "", [ "CRRMonitor", "Queue" ] ] },
+        "KmsMasterKeyId": { "Ref": "CRRMonitorKey" },
+        "RedrivePolicy": {
+          "deadLetterTargetArn": {"Fn::GetAtt" : [ "CRRMonitorDeadLetterQueue" , "Arn" ]},
+          "maxReceiveCount": 10
+        }
       }
     },
     "CRRMonitorQueuePolicy": {
@@ -1401,6 +1251,12 @@
             }
           ]
         }
+      }
+    },
+    "CRRMonitorDeadLetterQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "KmsMasterKeyId": { "Ref": "CRRMonitorKey" }
       }
     },
     "CRRMonitorKinesisDeliveryStream": {
@@ -1459,7 +1315,7 @@
         "Handler": "CRRdeployagent.handler",
         "FunctionName": "CRRDeployAgent",
         "Role": { "Fn::GetAtt": [ "CRRMonitorDeployRole", "Arn" ] },
-        "Runtime": "python3.7",
+        "Runtime": "python3.8",
         "Timeout": 300
       },
       "DependsOn": [
@@ -1544,7 +1400,8 @@
       "Type" : "AWS::SNS::Topic",
       "Properties" : {
         "DisplayName" : "CRRMonitorMetricsTopic",
-        "TopicName" : "CRRMonitorMetricsTopic"
+        "TopicName" : "CRRMonitorMetricsTopic",
+        "KmsMasterKeyId": { "Fn::Sub": "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/sns" }
       }
     },
     "logBucket": {
@@ -1644,7 +1501,7 @@
         "Handler": "CRRMonitorTrailAlarm.handler",
         "FunctionName": "CRRMonitorTrailAlarm",
         "Role": { "Fn::GetAtt": [ "CRRMonitorTrailRole", "Arn" ] },
-        "Runtime": "python3.7",
+        "Runtime": "python3.8",
         "Timeout": 300
       },
       "DependsOn": [
@@ -1762,7 +1619,7 @@
             ]
           }
         },
-        "Runtime": "python3.7",
+        "Runtime": "python3.8",
         "Timeout": 300
       }
     },
@@ -1777,7 +1634,51 @@
         },
         "Region": { "Ref": "AWS::Region" }
       }
-    }
+    },
+    "CRRMonitorKey": {
+      "Type" : "AWS::KMS::Key",
+       "Properties" : {
+         "Description" : "Key used to encrypt SNS/SQS messages for CRR Monitor solution",
+         "Enabled": true,
+         "EnableKeyRotation": true,
+         "KeyPolicy": {
+           "Statement": [
+             {
+               "Sid": "Allow root user to administer the key",
+               "Effect": "Allow",
+               "Principal": {
+                   "AWS": {
+                       "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+                   }
+               },
+               "Action": [ "kms:*" ],
+               "Resource": [ "*" ]
+             },
+             {
+               "Sid": "Allow Amazon SNS to use this key",
+               "Effect": "Allow",
+               "Principal": {
+                 "Service": "sns.amazonaws.com"
+               },
+               "Action": [
+                 "kms:Decrypt",
+                 "kms:GenerateDataKey*"
+               ],
+               "Resource": "*"
+             }
+           ]
+         }
+       }
+     },
+     "CRRMonitorKeyAlias": {
+       "Type": "AWS::KMS::Alias",
+       "Properties": {
+         "AliasName": "alias/crr-monitor-encryption-key",
+         "TargetKeyId": {
+           "Ref": "CRRMonitorKey"
+         }
+       }
+     }
   },
   "Outputs": {
     "QueueURL": {

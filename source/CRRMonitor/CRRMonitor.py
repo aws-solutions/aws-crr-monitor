@@ -1,20 +1,18 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-##############################################################################
-#  Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.   #
-#                                                                            #
-#  Licensed under the Amazon Software License (the 'License'). You may not   #
-#  use this file except in compliance with the License. A copy of the        #
-#  License is located at                                                     #
-#                                                                            #
-#      http://aws.amazon.com/asl/                                            #
-#                                                                            #
-#  or in the 'license' file accompanying this file. This file is distributed #
-#  on an 'AS IS' BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,        #
-#  express or implied. See the License for the specific language governing   #
-#  permissions and limitations under the License.                            #
-##############################################################################
+######################################################################################################################
+#  Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.                                           #
+#                                                                                                                    #
+#  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance    #
+#  with the License. A copy of the License is located at                                                             #
+#                                                                                                                    #
+#      http://www.apache.org/licenses/LICENSE-2.0                                                                    #
+#                                                                                                                    #
+#  or in the 'license' file accompanying this file. This file is distributed on an 'AS IS' BASIS, WITHOUT WARRANTIES #
+#  OR CONDITIONS OF ANY KIND, express or implied. See the License for the specific language governing permissions    #
+#  and limitations under the License.                                                                                #
+######################################################################################################################
 
 from __future__ import print_function
 
@@ -23,6 +21,7 @@ import boto3
 from botocore.exceptions import ClientError
 import os
 from datetime import datetime, timedelta
+import urllib.request
 
 def getparm(parmname, defaultval):
     try:
@@ -67,6 +66,23 @@ purge_thresh = getparm('purge_thresh', 24)
 
 # DEBUG
 DEBUG = getparm('debug', 0)
+
+# VERSION_ID: The version of this solution
+VERSION_ID = getparm('SolutionVersion', "").strip()
+
+# ANONYMOUS_SOLUTION_ID: An anonymous identifier for this instance of the solution
+ANONYMOUS_SOLUTION_ID = getparm('UUID', "").strip()
+
+# SEND_ANONYMOUS_USAGE_METRIC: A flag indicating whether the solution should
+# report anonymous usage metrics to AWS
+SEND_ANONYMOUS_USAGE_METRIC = (getparm('AnonymousUsage', 'No') == 'Yes')
+
+# Make sure the VERSION_ID and ANONYMOUS_SOLUTION_ID are valid
+if VERSION_ID is None or VERSION_ID == "":
+    SEND_ANONYMOUS_USAGE_METRIC = False
+
+if ANONYMOUS_SOLUTION_ID is None or ANONYMOUS_SOLUTION_ID == "":
+    SEND_ANONYMOUS_USAGE_METRIC = False
 
 #
 # ddbtable and stattable: name of the DynamoDB tables. The tables are
@@ -622,6 +638,36 @@ def queue_handler(event, context):
         )
 
     print('INFO [CNUM-' + str(cnum) + '] Completed - ' + str(msg_ctr) + ' messages processed')
+
+    if SEND_ANONYMOUS_USAGE_METRIC and msg_ctr > 0:
+        send_anonymous_usage_metric({
+            "Action": f"Num messages processed by CRRMonitor: {msg_ctr}"
+        })
+
+def send_anonymous_usage_metric(metric_data={}):
+    try:
+        if type(metric_data) is not dict or not dict:
+            raise Exception('Invalid metric_data passed to send_anonymous_usage_metric')
+
+        metric_endpoint = 'https://metrics.awssolutionsbuilder.com/generic'
+        metric_payload = {
+            "Solution": "SO0022",
+            "UUID": ANONYMOUS_SOLUTION_ID,
+            "Version": VERSION_ID,
+            "Timestamp": str(datetime.utcnow()),
+            "Data": metric_data
+        }
+        data = bytes(json.dumps(metric_payload), 'utf-8')
+        headers = { "Content-Type": "application/json" }
+
+        print(f"Sending anonymous usage metric: {str(metric_payload)}")
+
+        req = urllib.request.Request(url=metric_endpoint, data=data, method='POST', headers=headers)
+        with urllib.request.urlopen(req) as f:
+            print(f"Anonymous usage metric send status: {f.status}")
+    except Exception as e:
+        # Log the exception but do not raise it again
+        print(f'Exception while sending anonymous usage metric: {e}')
 
 ###### M A I N ######
 client = connect_clients(client)
